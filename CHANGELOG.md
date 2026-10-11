@@ -22,10 +22,10 @@
 - KEY3、KEY4、S5 引脚已在 CubeMX 中配置为输入，固件未使用，接入功能或从 .ioc 移除。
 - `Core/Inc/fsae_telemetry.pb.h` 是编译 stub，接入 nanopb 遥测时需替换为真实生成文件。
 - 固件无版本号宏，CAN 上也不发版本帧；建议增加版本标识便于赛场排查。
-- 仓库尚未初始化 git，.gitignore 已就位，init 后即可跟踪。
 
 ## 2026-10-11
 
 - 新增 `README.md`：硬件参数、引脚表、CAN 收发接口、运行行为、目录结构和两条构建路径，事实均核对自代码与 DBC。
 - 扩充 `.gitignore`：原 3 行基础上补充 Keil 布局文件、编译中间产物、调试器日志和系统杂项；保留 `.settings` 跟踪。
 - 用 ninja 增量构建验证 Debug 配置通过，产物 `build/Debug/SteeringWheel_Button.elf`。
+- 初始化 git 仓库，首次导入 127 个文件并推送到 `origin/main`（https://github.com/niulitong/Steering_wheel）。

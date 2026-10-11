@@ -36,7 +36,7 @@ CM_ BO_ 1793 "Lap-timer start/stop toggle — sent once when PB12 is released. S
 CM_ SG_ 1793 RecorderToggle "PB12 released: bit0=1 = toggle the Display lap/sprint timer (start/stop)";
 
 CM_ BO_ 1794 "Error clear — sent once when PB13 is released";
-CM_ SG_ 1794 ErrorClearActive "PB13 released: bit0=1 = clear the oldest Display alert";
+CM_ SG_ 1794 ErrorClearActive "PB13 released: bit0=1 = clear all Display alerts";
 
 VAL_ 1792 SlipLevel 0 "Level_0" 1 "Level_1" 2 "Level_2" 3 "Level_3" 4 "Level_4" 5 "Level_5" 6 "Level_6" 7 "Level_7";
 

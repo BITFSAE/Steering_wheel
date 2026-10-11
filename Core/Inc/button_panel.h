@@ -2,8 +2,8 @@
  * @file    button_panel.h
  * @brief   Steering wheel button panel module header.
  *          Handles:
- *            - PB12: recorder/camera toggle (rising edge → TX on 0x701)
- *            - PB13: error-clear trigger (rising edge → TX on 0x702)
+ *            - PB12: lap-timer start/stop toggle (DBC name RecorderToggle; TX on 0x701 at release)
+ *            - PB13: error-clear trigger (TX on 0x702 at release)
  *            - PA6/PA7/PB0/PB1: 4-position rotary switch → drive mode
  *            - PA1 ADC: 0-3.3V → 8-level slip rate with moving-average filter
  *          Slip level is sent on CAN ID 0x700 on change.
@@ -18,7 +18,7 @@
 /* CAN identifiers                                                           */
 /* ------------------------------------------------------------------------- */
 #define CAN_ID_SLIP_LEVEL       0x700U   /* Slip level (0..7)                 */
-#define CAN_ID_RECORDER_TOGGLE  0x701U   /* Recorder/camera toggle (bit0)     */
+#define CAN_ID_RECORDER_TOGGLE  0x701U   /* Lap-timer toggle (bit0), DBC RecorderToggle */
 #define CAN_ID_ERROR_CLEAR      0x702U   /* Error clear (bit0)                */
 #define CAN_ID_DRIVE_MODE       0x310U   /* DriveMode_Request (vehicle protocol) */
 

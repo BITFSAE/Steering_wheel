@@ -128,7 +128,8 @@ void HAL_CAN_MspDeInit(CAN_HandleTypeDef* canHandle)
 /* USER CODE BEGIN 1 */
 // ������յı���ID
 //shaoqi_change
-uint16_t CAN_RX_MSG_ID[4] = {0x401, 0x501, 0x502, 0x50};
+/* ID 列表模式需要 4 项：0x50(已停用的 IMU 原始帧)不再接收，第 4 项以 0x502 重复占位 */
+uint16_t CAN_RX_MSG_ID[4] = {0x401, 0x501, 0x502, 0x502};
 
 /*
  * @func: ����CAN���˲�
@@ -246,75 +247,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 		ECU_INFO.vehicle.motors[0].motor_error = (int32_t)CAN_RxData[0]; /* FL */
 		ECU_INFO.vehicle.motors[1].motor_error = (int32_t)CAN_RxData[4]; /* FR */
 	}
-	if(RxHeader.StdId==0x50)
-	{
-//		User_CAN_Send_sq(0x03,CAN_RxData);
-		if(CAN_RxData[1]==0x50)
-		{
-			User_CAN_Send_sq(0x60,CAN_RxData);
-		}else if(CAN_RxData[1]==0x51)
-		{
-			User_CAN_Send_sq(0x61,CAN_RxData);
-		}else if(CAN_RxData[1]==0x52){
-			User_CAN_Send_sq(0x62,CAN_RxData);
-		}else if(CAN_RxData[1]==0x53){
-			if(CAN_RxData[2]==0x01)
-			{
-				User_CAN_Send_sq(0x63,CAN_RxData);
-			}else if(CAN_RxData[2]==0x02)
-			{
-				User_CAN_Send_sq(0x64,CAN_RxData);
-			}else if(CAN_RxData[2]==0x03)
-			{
-				User_CAN_Send_sq(0x65,CAN_RxData);
-			}
-
-		}else if(CAN_RxData[1]==0x54){
-			User_CAN_Send_sq(0x66,CAN_RxData);
-		}
-	}
 }
-
-/*
- * @func: CAN���Ľ����ж�[FIFO1],���0x50
- */
-
-//void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
-//{
-//	if(HAL_CAN_GetRxMessage(hcan, CAN_FILTER_FIFO0, &RxHeader, CAN_RxData)!= HAL_OK)
-//	{
-//	    // ������
-//	    Error_Handler();
-//	}
-//	printf("ID:0x%X\r\n",RxHeader.StdId);
-//	if(RxHeader.StdId==0x50)
-//	{
-//		if(CAN_RxData[1]==0x50)
-//		{
-//			User_CAN_Send_sq(0x60,CAN_RxData);
-//		}else if(CAN_RxData[1]==0x51)
-//		{
-//			User_CAN_Send_sq(0x61,CAN_RxData);
-//		}else if(CAN_RxData[1]==0x52){
-//			User_CAN_Send_sq(0x62,CAN_RxData);
-//		}else if(CAN_RxData[1]==0x53){
-//			if(CAN_RxData[2]==0x01)
-//			{
-//				User_CAN_Send_sq(0x63,CAN_RxData);
-//			}else if(CAN_RxData[2]==0x02)
-//			{
-//				User_CAN_Send_sq(0x64,CAN_RxData);
-//			}else if(CAN_RxData[2]==0x03)
-//			{
-//				User_CAN_Send_sq(0x65,CAN_RxData);
-//			}
-//
-//		}else if(CAN_RxData[1]==0x54){
-//			User_CAN_Send_sq(0x66,CAN_RxData);
-//		}
-//	}
-//
-//}
 
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
 {

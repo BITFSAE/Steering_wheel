@@ -3,8 +3,8 @@
  * @brief   Steering wheel button panel implementation.
  *
  * Signal sources (all active-low with internal pull-up):
- *   PB12  KEY1  – Recorder/camera toggle (rising edge → TX)
- *   PB13  KEY2  – Error-clear trigger (rising edge → TX)
+ *   PB12  KEY1  – Lap-timer start/stop toggle (DBC name RecorderToggle; TX on release)
+ *   PB13  KEY2  – Error-clear trigger (TX on release)
  *   PA6   S1    – Rotary pos.0 → drive mode S
  *   PA7   S2    – Rotary pos.1 → drive mode Q
  *   PB0   S3    – Rotary pos.2 → drive mode C
@@ -13,8 +13,8 @@
  *
  * CAN output (event-driven):
  *   ID 0x700 — slip level (0..7), sent on change
- *   ID 0x701 — recorder/camera toggle (bit0 = 1), sent on PB12 rising edge
- *   ID 0x702 — error clear (bit0 = 1), sent on PB13 rising edge
+ *   ID 0x701 — lap-timer toggle (bit0 = 1), sent once when PB12 is released
+ *   ID 0x702 — error clear (bit0 = 1), sent once when PB13 is released
  *   ID 0x310 — drive mode request (vehicle protocol), sent on change
  */
 #include "button_panel.h"
@@ -153,7 +153,7 @@ void ButtonPanel_Process(void)
     /* ---- Button scan – every BUTTON_SCAN_PERIOD_MS ---- */
     if ((now - last_button_scan_ms) >= BUTTON_SCAN_PERIOD_MS) {
         last_button_scan_ms = now;
-        Scan_Buttons();        /* rising-edge → recorder/error-clear TX */
+        Scan_Buttons();        /* release edge → lap-timer / error-clear TX */
         Update_Drive_Mode();
         ADC_Read_And_Filter();
 
@@ -218,8 +218,9 @@ static void ADC_Read_And_Filter(void)
 /**
  * @brief  Scan the two push-buttons with software debounce.
  *
- *   PB12: rising edge → send recorder/camera toggle (0x701)
- *   PB13: rising edge → send error clear (0x702)
+ *   PB12: release (level 0→1) → send lap-timer toggle (0x701)
+ *   PB13: release (level 0→1) → send error clear (0x702)
+ *   Each press sends exactly one frame; no repeat while held, no 0 frame.
  */
 static void Scan_Buttons(void)
 {
@@ -229,7 +230,7 @@ static void Scan_Buttons(void)
     uint8_t pb12_new = Debounce_Sample(KEY1_GPIO_Port, KEY1_Pin, &db_pb12);
     uint8_t pb13_new = Debounce_Sample(KEY2_GPIO_Port, KEY2_Pin, &db_pb13);
 
-    /* Rising edge: old=0 (pressed) → new=1 (released) */
+    /* Level rising edge = release: old=0 (pressed) → new=1 (idle, pull-up) */
     if (pb12_old == 0U && pb12_new == 1U) {
         Send_CAN_RecorderToggle();
         Flash_LED1();
@@ -309,8 +310,8 @@ static void Send_CAN_SlipLevel(void)
 }
 
 /**
- * @brief  Send recorder/camera toggle on CAN ID 0x701.
- *         bit0 = 1 means "toggle recorder/camera state".
+ * @brief  Send the lap-timer toggle on CAN ID 0x701 (DBC name RecorderToggle).
+ *         bit0 = 1 means "start/stop the Display lap or sprint timer".
  */
 static void Send_CAN_RecorderToggle(void)
 {

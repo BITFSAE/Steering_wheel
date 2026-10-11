@@ -1,10 +1,10 @@
 # SteeringWheel_Button 方向盘按钮板固件
 
-BIT FSAE 方向盘按钮板固件，与方向盘显示屏配套使用。板上读取旋钮、电位器和两个按键，把驾驶指令以 CAN 报文发出：
+BIT FSAE 方向盘按钮板固件，与车手屏（HMI_Display）配套使用。板上读取旋钮、电位器和两个按键，把操作以 CAN 报文发给车手屏。方向盘与车手屏如何分工、各控件最终起什么作用，见车手屏仓库的 [方向盘与车手屏](../HMI_Display/docs/steering_wheel.md)，本文只写方向盘板自身的硬件、帧和代码行为。
 
 - 旋钮（4 位）选择驾驶模式，档位变化时发送 0x310 DriveMode_Request。
 - 电位器设定滑移率等级，共 8 级（0～7），数值变化时发送 0x700。
-- KEY1 触发录像/相机切换（0x701），KEY2 触发消错（0x702）。
+- KEY1 是圈速计时开关，每按一次发一帧 0x701，车手屏据此开始或停止圈速计时/冲刺计时；KEY2 是消错，发 0x702。DBC 里 0x701 的信号名 `RecorderToggle` 沿用旧称，与录像、相机无关。
 
 微控制器为 STM32F103C8T6，裸机轮询，无 RTOS。CAN 位率 500 kbit/s。
 
@@ -28,42 +28,34 @@ BIT FSAE 方向盘按钮板固件，与方向盘显示屏配套使用。板上�
 | PA5 | LED2 | 输出 | 心跳灯，每 500 ms 翻转（1 Hz） |
 | PA6、PA7、PB0、PB1 | S1、S2、S3、S4 | 输入 | 4 位旋钮 |
 | PA11、PA12 | CAN_RX、CAN_TX | — | CAN1 收发器接口 |
-| PB12 | KEY1 | 输入 | 录像/相机切换 |
-| PB13 | KEY2 | 输入 | 消错 |
+| PB12 | KEY1 | 输入 | 圈速计时开关（开始/停止） |
+| PB13 | KEY2 | 输入 | 消错（清除车手屏最早一条告警） |
 | PB2、PB11、PB14、PB15 | S5、KEY3、KEY4 | 输入 | 预留，固件未使用 |
 
 ## CAN 接口
 
 ### 发送
 
-CAN ID 定义在 `Core/Inc/button_panel.h`。滑移等级和驾驶模式采用事件驱动：数值变化才发送，上电后各强制发送一帧当前值。0x701 和 0x702 只在按键释放沿单次发送。
+CAN ID 定义在 `Core/Inc/button_panel.h`。滑移等级和驾驶模式采用事件驱动，数值变化才发送：滑移等级在上电后第一次扫描必发一帧；驾驶模式在去抖确认出有效档位（上电后约 30 ms）后发一帧，旋钮没有有效档位时不发。0x701 和 0x702 在按键**释放**时各发一帧，按住期间不重复，也不发 0 帧。
 
 | ID | 帧名 | DLC | 触发条件 | 载荷 |
 | --- | --- | --- | --- | --- |
 | 0x310 | DriveMode_Request | 8 | 旋钮档位变化 | byte0 = '0'..'3'（48..51，对应模式 S/Q/C/E），档位无效时 0xFF |
 | 0x700 | SlipLevel | 1 | 滑移等级变化 | byte0 = 0..7 |
-| 0x701 | RecorderToggle | 1 | KEY1 释放沿 | bit0 = 1 |
-| 0x702 | ErrorClear | 1 | KEY2 释放沿 | bit0 = 1 |
+| 0x701 | RecorderToggle（圈速计时开关） | 1 | KEY1 释放 | bit0 = 1 |
+| 0x702 | ErrorClear（消错） | 1 | KEY2 释放 | bit0 = 1 |
 
-信号定义的权威文件是 `steering_wheel.dbc`（本节点 3 帧）和 `Vehicle_CanB.dbc`（整车 CAN B 协议）。配套显示屏收到 0x700/0x701/0x702 后，合并为 0x703 SteeringCmd 转发给 ECU。
+`steering_wheel.dbc` 是本节点 3 帧的 DBC。整车 CAN 协议的权威来源是 `vehicle-interfaces` 仓库；本仓库根目录的 `Vehicle_CanB.dbc` 是早期快照（仍含已更名的 0x069/0x06A、旧版 SOP 帧等），不随中央库更新，不要据此开发。车手屏收到 0x700/0x701/0x702 后合并为 0x703 SteeringCmd 发给 ECU。本固件**不发送** 0x784（中央库登记的冗余驾驶模式帧）。
 
-0x310 在 `Vehicle_CanB.dbc` 中的发送节点标为 Display，本板以相同帧格式直接发送。如两侧协议有出入，以 DBC 为准并同步修订。
+0x310 在中央库中的发送节点标为 Display：本板在方向盘专用总线上发出，车手屏再转发到 CANB。本板发出的 DLC 为 8，byte1..7 为 0。车手屏在计时进行中不转发 0x310。
 
 ### 接收
 
-硬件过滤器只放行下列 ID，其余报文丢弃。解析代码在 `Core/Src/can.c` 的 `HAL_CAN_RxFifo0MsgPendingCallback`。
+本板的功能不需要接收任何帧。`Core/Src/can.c` 里保留了早前 interface 工程的接收解析，硬件过滤器放行 0x401、0x501、0x502、0x503、0x504，解析结果写入 `ECU_INFO`，不外发也不影响按键逻辑。车手屏的 CAN2 只收不发，这些帧不会出现在方向盘总线上，这段代码实际不会被触发。
 
-| ID | 内容 | 处理 |
-| --- | --- | --- |
-| 0x401 | BMS 总电压、电流、SOC、最高温 | 写入 ECU_INFO.bms 和 ERRO[] |
-| 0x501 | 车速 | 写入 ECU_INFO.vehicle.speed_kmh |
-| 0x502 | 四电机转速 | 写入 ECU_INFO.vehicle.motors[].rpm |
-| 0x503、0x504 | 电机故障码（RL/RR、FL/FR） | 写入 motor_error |
-| 0x50 | 显示屏发来的 IMU 原始帧 | 按 SubType 转发为 0x60～0x66 |
+IMU 原始帧 0x50 的接收和向 0x60～0x66 的转发已于 2026-10-11 删除（IMU 设备已不存在，见 [更新记录](CHANGELOG.md)）。
 
-0x50 帧的转发规则按 byte1（SubType）：0x50/0x51/0x52/0x54 分别重发为 0x60/0x61/0x62/0x66；0x53 时按 byte2 细分为 0x63/0x64/0x65（横滚/俯仰/航向）。转发帧 DLC 固定为 8。
-
-写入 ECU_INFO 的整车数据目前只在本板内部留存，不外发遥测。`Core/Inc/fsae_telemetry.pb.h` 是为编译通过保留的类型 stub，本工程未接入 nanopb。
+`Core/Inc/fsae_telemetry.pb.h` 是为编译通过保留的类型 stub，本工程未接入 nanopb。
 
 ## 运行行为
 
@@ -93,11 +85,11 @@ SteeringWheel_Button/
 ├── STM32F103XX_FLASH.ld       # 链接脚本
 ├── SteeringWheel_Button.ioc   # CubeMX 工程，引脚与时钟的源头
 ├── steering_wheel.dbc         # 本节点 CAN 定义（0x700/0x701/0x702）
-├── Vehicle_CanB.dbc           # 整车 CAN B 协议
+├── Vehicle_CanB.dbc           # 整车 CAN B 协议的早期快照，已过期，权威来源见 vehicle-interfaces
 └── CHANGELOG.md               # 变更记录与待办
 ```
 
-`main()` 只初始化 GPIO、ADC1、CAN1、TIM1。TIM1 与 usart.c、dma.c、delay.c、sys.c 为模板遗留，当前固件没有使用其功能。
+`main()` 只初始化 GPIO、ADC1、CAN1、TIM1。TIM1 与 usart.c、dma.c、delay.c、sys.c 为模板遗留，当前固件没有使用其功能。`usart.c` 里残留一条 LoRa 串口命令路径（收到 `M`+一个字节后发送 0x310），因 `main()` 没有初始化 USART，不会运行；启用 USART1 前须先决定是否保留它。
 
 ## 构建与烧录
 

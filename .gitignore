@@ -1,0 +1,34 @@
+# CMake / STM32CubeCLT 构建输出
+build/
+mx.scratch
+
+# Keil MDK：窗口布局文件
+*.uvguix.*
+*.scvd
+
+# 编译中间产物与镜像
+*.o
+*.d
+*.obj
+*.crf
+*.dep
+*.iex
+*.lnp
+*.lst
+*.htm
+*.axf
+*.elf
+*.bin
+*.hex
+*.map
+
+# 调试器日志
+JLinkLog.txt
+JLinkSettings.ini
+
+# 保留 STM32Cube 的共享设置（.settings 目录随仓库跟踪）
+!.settings
+
+# 操作系统杂项
+Thumbs.db
+.DS_Store

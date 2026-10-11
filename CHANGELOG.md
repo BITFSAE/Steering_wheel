@@ -11,6 +11,7 @@
   - 电位器输入经 16 点滑动平均后量化为 8 级，数值变化时发送 0x700 SlipLevel。
   - KEY1 释放时发送 0x701（圈速计时开关，DBC 名 RecorderToggle，bit0=1），KEY2 释放时发送 0x702 ErrorClear（bit0=1）。
   - 扫描周期 10 ms，去抖窗口约 40 ms，全部为事件驱动发送，上电各强制首发一帧。
+  - 不发送 0x784：中央库已于 2026-10-11 删除该冗余驾驶模式帧，无需处理。
 - CAN 接收（`Core/Src/can.c`）：硬件过滤只收 0x401、0x501、0x502、0x503、0x504，解析结果写入 ECU_INFO，方向盘总线上不会出现这些帧。
 - 遗留代码：can.c 的接收解析、ecu_info 汇总结构、usart/dma/delay/sys 模板来自早前的 interface 工程，编译参与但 main 未初始化 USART/DMA。
 - 构建双路径：STM32CubeCLT + CMake/Ninja（Debug/Release 预设）与 Keil MDK 工程。Debug 构建占用 FLASH 21.9%、RAM 9.2%（2026-10-11 实测）。
@@ -20,7 +21,6 @@
 - 上板与抓包确认：0x701/0x702 每次按下只发一帧、不发 0 帧、释放时发（代码如此，未在总线上抓包验证）；车手屏端 300 ms 去重间隔因此会吞掉间隔小于 300 ms 的两次连按。
 - `AutoBusOff` 在 `.ioc` 中关闭，固件也没有处理 bus-off（只开了接收中断）：一旦进入 bus-off，面板停发直到复位。是否改为自动恢复须在 CubeMX 中修改。
 - 驾驶模式：旋钮在车手屏计时锁期间被拒绝时，本板不会在锁解除后重发，旋钮位置与实际模式可能不一致，须重新拨动旋钮。
-- 本固件不发送 0x784（中央库登记的冗余驾驶模式帧），须与 ECU 侧确认是否需要。
 - 根目录 `Vehicle_CanB.dbc` 是早期快照，已与中央库不一致，应删除或改为引用 `vehicle-interfaces`。
 - `usart.c` 的 LoRa `M` 命令会发送 0x310，当前不运行；启用 USART1 前须先评审。
 - 与显示屏协议侧对齐 0x310 的发送节点：`Vehicle_CanB.dbc` 中标为 Display，本板直接发送同一格式。

@@ -3,8 +3,9 @@
 BIT FSAE 方向盘按钮板固件，与车手屏（HMI_Display）配套使用。板上读取旋钮、电位器和两个按键，把操作以 CAN 报文发给车手屏。方向盘与车手屏如何分工、各控件最终起什么作用，见车手屏仓库的 [方向盘与车手屏](../HMI_Display/docs/steering_wheel.md)，本文只写方向盘板自身的硬件、帧和代码行为。
 
 - 旋钮（4 位）选择驾驶模式，档位变化时发送 0x310 DriveMode_Request。
-- 电位器设定滑移率等级，共 8 级（0～7），数值变化时发送 0x700。
-- KEY1 是圈速计时开关，每按一次发一帧 0x701，车手屏据此开始或停止圈速计时/冲刺计时；KEY2 是消错，发 0x702。DBC 里 0x701 的信号名 `RecorderToggle` 沿用旧称，与录像、相机无关。
+- 电位器设定滑移率等级，共 8 级（0～7）。滑级和两个按键共用一帧 0x703 SteeringCmd，车手屏原样转发给 ECU。
+- KEY1 是圈速计时开关，单独按下松开时 0x703 的 `LapTimerToggle` 置 1，车手屏据此开始或停止圈速/冲刺计时；KEY2 是消错，单独按下松开时 `ErrorClearActive` 置 1。
+- 退使组合键：先按住 KEY2，再按下 KEY1，两键一起按住 300 ms 后，0x703 的 `DisableRequest` 置 1，向 ECU 请求退出使能。
 
 微控制器为 STM32F103C8T6，裸机轮询，无 RTOS。CAN 位率 500 kbit/s。
 
@@ -28,26 +29,34 @@ BIT FSAE 方向盘按钮板固件，与车手屏（HMI_Display）配套使用。
 | PA5 | LED2 | 输出 | 心跳灯，每 500 ms 翻转（1 Hz） |
 | PA6、PA7、PB0、PB1 | S1、S2、S3、S4 | 输入 | 4 位旋钮 |
 | PA11、PA12 | CAN_RX、CAN_TX | — | CAN1 收发器接口 |
-| PB12 | KEY1 | 输入 | 圈速计时开关（开始/停止） |
-| PB13 | KEY2 | 输入 | 消错（清除车手屏上的全部告警） |
+| PB12 | KEY1 | 输入 | 圈速计时开关（开始/停止）；退使组合键的第二个键 |
+| PB13 | KEY2 | 输入 | 消错（清除车手屏上的全部告警）；退使组合键的第一个键 |
 | PB2、PB11、PB14、PB15 | S5、KEY3、KEY4 | 输入 | 预留，固件未使用 |
 
 ## CAN 接口
 
 ### 发送
 
-CAN ID 定义在 `Core/Inc/button_panel.h`。滑移等级和驾驶模式采用事件驱动，数值变化才发送：滑移等级在上电后第一次扫描必发一帧；驾驶模式在去抖确认出有效档位（上电后约 30 ms）后发一帧，旋钮没有有效档位时不发。0x701 和 0x702 在按键**释放**时各发一帧，按住期间不重复，也不发 0 帧。
+CAN ID 和 0x703 的位定义在 `Core/Inc/button_panel.h`，与中央库 `vehicle-interfaces` 的 `Vehicle_CanB.dbc`（BO_ 1795、BO_ 784）一致。两帧都是事件驱动，没有周期发送。
 
 | ID | 帧名 | DLC | 触发条件 | 载荷 |
 | --- | --- | --- | --- | --- |
-| 0x310 | DriveMode_Request | 8 | 旋钮档位变化 | byte0 = '0'..'3'（48..51，对应模式 S/Q/C/E），档位无效时 0xFF |
-| 0x700 | SlipLevel | 1 | 滑移等级变化 | byte0 = 0..7 |
-| 0x701 | RecorderToggle（圈速计时开关） | 1 | KEY1 释放 | bit0 = 1 |
-| 0x702 | ErrorClear（消错） | 1 | KEY2 释放 | bit0 = 1 |
+| 0x703 | SteeringCmd | 2 | 滑级变化、单键松开、退使组合键 | byte0 bit0..2 = 滑级 0..7；byte1 bit0 `DisableRequest`、bit1 `ErrorClearActive`、bit2 `LapTimerToggle`，其余位为 0 |
+| 0x310 | DriveMode_Request | 8 | 旋钮档位变化 | byte0 = '0'..'3'（48..51，对应旋钮 S1..S4），档位无效时 0xFF；byte1..7 为 0 |
 
-`steering_wheel.dbc` 是本节点 3 帧的 DBC。整车 CAN 协议的权威来源是 `vehicle-interfaces` 仓库；本仓库根目录的 `Vehicle_CanB.dbc` 是早期快照（仍含已更名的 0x069/0x06A、旧版 SOP 帧等），不随中央库更新，不要据此开发。车手屏收到 0x700/0x701/0x702 后合并为 0x703 SteeringCmd 发给 ECU。本固件**不发送** 0x784（中央库登记的冗余驾驶模式帧）。
+0x703 的发送规则：
 
-0x310 在中央库中的发送节点标为 Display：本板在方向盘专用总线上发出，车手屏再转发到 CANB。本板发出的 DLC 为 8，byte1..7 为 0。车手屏在计时进行中不转发 0x310。
+- 每帧都带当前滑级。上电后第一次扫描必发一帧，之后滑级变化才发。
+- 单按 KEY1 或 KEY2：在**松开**时发一帧，对应位为 1；按住期间不发，也不补发 0 帧。
+- 退使组合键：KEY2 已按下后再按下 KEY1，两键一起按住 300 ms（从按下 KEY1 算起约 340 ms，含 40 ms 去抖）后开始发送，每 20 ms 一帧 `DisableRequest`=1，直到任一键松开，且至少发 3 帧；结束时补一帧 `DisableRequest`=0。请求期间因滑级变化发出的帧同样带 1。
+- 两键只要同时按下过，松开时都不发计时和清错。先按 KEY1 再按 KEY2，或在同一个 10 ms 扫描周期内同时按下，不触发退使。
+- 想再次请求退使：保持 KEY2，松开 KEY1 后再按一次。
+
+0x310 在去抖确认出有效档位（上电后约 30 ms）后发第一帧，旋钮没有有效档位时不发首帧；换档途中出现的无效读数会发一帧 0xFF，车手屏丢弃。
+
+`steering_wheel.dbc` 是本节点两帧的 DBC。整车 CAN 协议的权威来源是 `vehicle-interfaces` 仓库的 `can/Vehicle_CanB.dbc`，本仓库不保留整车 DBC 副本。
+
+车手屏收到 0x703 后原样转发到 CANB，计时锁期间也转发；收到 0x310 后，计时进行中不转发。0x310 在中央库中的发送节点标为 Display：本板在方向盘专用总线上发出，车手屏再转发到 CANB。
 
 ### 接收
 
@@ -72,7 +81,7 @@ IMU 原始帧 0x50 的接收和向 0x60～0x66 的转发已于 2026-10-11 删除
 ```
 SteeringWheel_Button/
 ├── Core/
-│   ├── Inc/                  # button_panel.h：面板参数与 CAN ID 定义
+│   ├── Inc/                  # button_panel.h：面板参数、CAN ID 与 0x703 位定义
 │   └── Src/                  # button_panel.c：面板逻辑
 │                              # can.c：CAN 收发、过滤与解析
 │                              # ecu_info.c：整车信息汇总
@@ -84,8 +93,8 @@ SteeringWheel_Button/
 ├── CMakePresets.json          # Debug/Release 预设
 ├── STM32F103XX_FLASH.ld       # 链接脚本
 ├── SteeringWheel_Button.ioc   # CubeMX 工程，引脚与时钟的源头
-├── steering_wheel.dbc         # 本节点 CAN 定义（0x700/0x701/0x702）
-├── Vehicle_CanB.dbc           # 整车 CAN B 协议的早期快照，已过期，权威来源见 vehicle-interfaces
+├── steering_wheel.dbc         # 本节点 CAN 定义（0x703、0x310）
+├── tests/                     # button_panel.c 的主机单元测试（HAL 桩）
 └── CHANGELOG.md               # 变更记录与待办
 ```
 
@@ -104,7 +113,15 @@ cmake --preset Debug
 cmake --build build/Debug
 ```
 
-产物为 `build/Debug/SteeringWheel_Button.elf`。当前 Debug 构建占用 FLASH 21.9%、RAM 9.2%。
+产物为 `build/Debug/SteeringWheel_Button.elf`。当前 Debug 构建占用 FLASH 22.4%、RAM 9.3%。
+
+### 主机单元测试
+
+`tests/run_host_tests.sh` 用 HAL 桩在电脑上编译运行 `button_panel.c`，覆盖单键、退使组合键（时序、最少帧数、顺序、重复触发、请求期间滑级变化）和上电首帧。只需要系统自带的 `cc`：
+
+```bash
+tests/run_host_tests.sh
+```
 
 ### Keil MDK
 

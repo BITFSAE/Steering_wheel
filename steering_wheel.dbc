@@ -1,49 +1,61 @@
 VERSION ""
 
+
 NS_ :
-	BA_
-	BA_DEF_
-	BA_DEF_DEF_
-	BA_DEF_DEF_REL_
-	BA_DEF_REL_
-	BA_DEF_SGTYPE_
-	BA_REL_
-	BA_SGTYPE_
-	BO_TX_BU_
-	BU_
+	NS_DESC_
 	CM_
-	SG_MUL_VAL_
-	BS_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
 	BU_BO_REL_
+	SG_MUL_VAL_
 
-BS_: 500000
+BS_:
 
-BU_: VCU SteeringWheel
+BU_: SteeringWheel Display
 
-BO_ 1792 SlipLevel_0x700: 1 SteeringWheel
- SG_ SlipLevel : 0|8@1+ (1,0) [0|7] "" VCU
 
-BO_ 1793 RecorderToggle_0x701: 1 SteeringWheel
- SG_ RecorderToggle : 0|1@1+ (1,0) [0|1] "" VCU
+BO_ 1795 SteeringCmd_0x703: 2 SteeringWheel
+ SG_ SlipLevel : 0|3@1+ (1,0) [0|7] ""  Display
+ SG_ DisableRequest : 8|1@1+ (1,0) [0|1] ""  Display
+ SG_ ErrorClearActive : 9|1@1+ (1,0) [0|1] ""  Display
+ SG_ LapTimerToggle : 10|1@1+ (1,0) [0|1] ""  Display
 
-BO_ 1794 ErrorClear_0x702: 1 SteeringWheel
- SG_ ErrorClearActive : 0|1@1+ (1,0) [0|1] "" VCU
+BO_ 784 DriveMode_Request: 8 SteeringWheel
+ SG_ DriveModeCode : 0|8@1+ (1,0) [0|255] ""  Display
 
-CM_ BO_ 1792 "Slip level — event-driven, sent only when slip level changes";
-CM_ SG_ 1792 SlipLevel "PA1 ADC potentiometer quantized: 0..7 = 8 slip levels";
 
-CM_ BO_ 1793 "Lap-timer start/stop toggle — sent once when PB12 is released. Signal name RecorderToggle is historical, not a video recorder";
-CM_ SG_ 1793 RecorderToggle "PB12 released: bit0=1 = toggle the Display lap/sprint timer (start/stop)";
 
-CM_ BO_ 1794 "Error clear — sent once when PB13 is released";
-CM_ SG_ 1794 ErrorClearActive "PB13 released: bit0=1 = clear all Display alerts";
 
-VAL_ 1792 SlipLevel 0 "Level_0" 1 "Level_1" 2 "Level_2" 3 "Level_3" 4 "Level_4" 5 "Level_5" 6 "Level_6" 7 "Level_7";
+CM_ BO_ 1795 "Steering command, standard CAN ID 0x703, DLC=2. SteeringWheel builds the whole frame on its private bus to Display; Display relays it verbatim to CANB (same ID, DLC and payload), also during the timing mode lock. Sent on events only: slip change, KEY1 release, KEY2 release, and every 20 ms while the exit-enable chord is active. Bits not defined here are 0. Reserved for a later merge: Byte2 DriveModeCode (0xFF = no mode request); not sent yet, DLC stays 2.";
+CM_ SG_ 1795 LapTimerToggle "KEY1 (PB12) released alone: 1 in that single frame. Display starts/stops the lap or sprint timer on the rising edge; frames 1 within 300 ms count as one press. ECU ignores it. Not sent when KEY1 was part of a two-key press.";
+CM_ SG_ 1795 ErrorClearActive "KEY2 (PB13) released alone: 1 in that single frame, then 0 in later frames. Display clears all alerts on the rising edge. Not sent when KEY2 was part of a two-key press.";
+CM_ SG_ 1795 DisableRequest "Exit-enable request to ECU. 1 = request leaving the enabled (ready-to-drive) state. Set by the chord: hold KEY2 (PB13), then press KEY1 (PB12), keep both held for 300 ms. SteeringWheel then sends 1 every 20 ms while both keys stay held (at least 3 frames), and one frame with 0 after release. Replaces the former RecorderToggle meaning of this bit; Display firmware before this change set this bit on every lap-timer press. Recommended ECU handling (ECU confirmation pending): act after 2 consecutive frames with 1.";
+CM_ SG_ 1795 SlipLevel "PA1 potentiometer quantized to eight levels 0..7; carried in every 0x703 frame.";
+CM_ BO_ 784 "Rotary-switch drive mode, standard CAN ID 0x310, DLC=8, sent when the debounced position changes; Byte1..7 are 0. Display relays it to CANB unless the timing mode lock is active, and drops 0xFF. Vehicle definition: vehicle-interfaces Vehicle_CanB.dbc BO_ 784.";
+CM_ SG_ 784 DriveModeCode "S1..S4 = ASCII '0'..'3' (48..51); 255 = no or several positions grounded (invalid).";
 
-VAL_ 1793 RecorderToggle 1 "Toggle";
 
-VAL_ 1794 ErrorClearActive 1 "ErrorClear";
 
-BA_DEF_ "BusType" STRING;
-BA_DEF_DEF_ "BusType" "CAN";
-BA_ "BusType" "CAN";
+VAL_ 784 DriveModeCode 48 "AC" 49 "AX" 50 "Skidpad" 51 "EN" 255 "Invalid" ;

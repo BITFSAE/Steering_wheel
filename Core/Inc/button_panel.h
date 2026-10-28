@@ -2,11 +2,14 @@
  * @file    button_panel.h
  * @brief   Steering wheel button panel module header.
  *          Handles:
- *            - PB12: lap-timer start/stop toggle (DBC name RecorderToggle; TX on 0x701 at release)
- *            - PB13: error-clear trigger (TX on 0x702 at release)
+ *            - PB12 KEY1: lap-timer start/stop toggle (0x703 LapTimerToggle at release)
+ *            - PB13 KEY2: error clear (0x703 ErrorClearActive at release)
+ *            - KEY2 held, then KEY1 pressed, both held 300 ms: exit-enable
+ *              request to the ECU (0x703 DisableRequest, repeated every 20 ms)
  *            - PA6/PA7/PB0/PB1: 4-position rotary switch → drive mode
  *            - PA1 ADC: 0-3.3V → 8-level slip rate with moving-average filter
- *          Slip level is sent on CAN ID 0x700 on change.
+ *          Slip level and the three button bits share CAN ID 0x703, which the
+ *          Display relays verbatim to the ECU.
  *          Drive mode is sent on CAN ID 0x310 on change.
  */
 #ifndef __BUTTON_PANEL_H__
@@ -17,10 +20,26 @@
 /* ------------------------------------------------------------------------- */
 /* CAN identifiers                                                           */
 /* ------------------------------------------------------------------------- */
-#define CAN_ID_SLIP_LEVEL       0x700U   /* Slip level (0..7)                 */
-#define CAN_ID_RECORDER_TOGGLE  0x701U   /* Lap-timer toggle (bit0), DBC RecorderToggle */
-#define CAN_ID_ERROR_CLEAR      0x702U   /* Error clear (bit0)                */
+#define CAN_ID_STEERING_CMD     0x703U   /* SteeringCmd, relayed to ECU by Display */
 #define CAN_ID_DRIVE_MODE       0x310U   /* DriveMode_Request (vehicle protocol) */
+
+/* ------------------------------------------------------------------------- */
+/* 0x703 SteeringCmd layout (vehicle-interfaces Vehicle_CanB.dbc BO_ 1795)   */
+/*   byte0 bit0..2 SlipLevel 0..7                                            */
+/*   byte1 bit0 DisableRequest, bit1 ErrorClearActive, bit2 LapTimerToggle    */
+/* Byte2 is reserved for a later DriveModeCode merge; DLC stays 2 for now.   */
+/* ------------------------------------------------------------------------- */
+#define STEERING_CMD_DLC            2U
+#define STEERING_CMD_DISABLE_REQ    0x01U
+#define STEERING_CMD_ERROR_CLEAR    0x02U
+#define STEERING_CMD_LAP_TOGGLE     0x04U
+
+/* Exit-enable chord: KEY2 held first, then KEY1; both held this long fires
+ * the request. While it is active, 0x703 goes out every DISABLE_TX_PERIOD_MS
+ * with DisableRequest=1, at least DISABLE_MIN_FRAMES times, then once with 0. */
+#define CHORD_HOLD_MS               300U
+#define DISABLE_TX_PERIOD_MS         20U
+#define DISABLE_MIN_FRAMES            3U
 
 /* ------------------------------------------------------------------------- */
 /* Drive mode codes (rotary-switch positions)                                */

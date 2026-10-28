@@ -3,8 +3,9 @@
  * @brief   Steering wheel button panel implementation.
  *
  * Signal sources (all active-low with internal pull-up):
- *   PB12  KEY1  – Lap-timer start/stop toggle (DBC name RecorderToggle; TX on release)
+ *   PB12  KEY1  – Lap-timer start/stop toggle (TX on release)
  *   PB13  KEY2  – Error-clear trigger (TX on release)
+ *   KEY2 held, then KEY1 pressed, both held CHORD_HOLD_MS – exit-enable request
  *   PA6   S1    – Rotary pos.0 → drive mode S
  *   PA7   S2    – Rotary pos.1 → drive mode Q
  *   PB0   S3    – Rotary pos.2 → drive mode C
@@ -12,9 +13,14 @@
  *   PA1   ADC1  – Potentiometer → 8-level slip rate
  *
  * CAN output (event-driven):
- *   ID 0x700 — slip level (0..7), sent on change
- *   ID 0x701 — lap-timer toggle (bit0 = 1), sent once when PB12 is released
- *   ID 0x702 — error clear (bit0 = 1), sent once when PB13 is released
+ *   ID 0x703 — SteeringCmd, DLC 2, every frame carries the current slip level:
+ *              sent when the slip level changes;
+ *              LapTimerToggle = 1 once when KEY1 is released on its own;
+ *              ErrorClearActive = 1 once when KEY2 is released on its own;
+ *              DisableRequest = 1 every DISABLE_TX_PERIOD_MS while the chord is
+ *              held (at least DISABLE_MIN_FRAMES frames), then one frame with 0.
+ *              Once both keys have been down together, neither key sends its
+ *              single action on release.
  *   ID 0x310 — drive mode request (vehicle protocol), sent on change
  */
 #include "button_panel.h"
@@ -53,6 +59,17 @@ static btn_debounce_t db_s2;
 static btn_debounce_t db_s3;
 static btn_debounce_t db_s4;
 
+/* Two-key handling. A key that was down together with the other one is
+ * "consumed": its release sends nothing, so the chord never also toggles the
+ * lap timer or clears alerts. */
+static uint8_t  key1_consumed;
+static uint8_t  key2_consumed;
+static uint8_t  chord_armed;          /* KEY2 was down before KEY1 went down  */
+static uint32_t chord_start_ms;
+static uint8_t  disable_active;       /* DisableRequest frames being sent     */
+static uint8_t  disable_frames;       /* frames sent in the current request   */
+static uint32_t last_disable_tx_ms;
+
 /* Timing book-keeping */
 static uint32_t last_button_scan_ms;
 static uint32_t last_led2_toggle_ms;
@@ -67,11 +84,10 @@ extern ADC_HandleTypeDef    hadc1;
 /* Static helper prototypes                                                  */
 /* ========================================================================= */
 static void      ADC_Read_And_Filter(void);
-static void      Scan_Buttons(void);
+static void      Scan_Buttons(uint32_t now);
+static void      Update_Disable_Request(uint32_t now);
 static void      Update_Drive_Mode(void);
-static void      Send_CAN_SlipLevel(void);
-static void      Send_CAN_RecorderToggle(void);
-static void      Send_CAN_ErrorClear(void);
+static void      Send_CAN_SteeringCmd(uint8_t event_bits);
 static void      Send_CAN_DriveMode(void);
 static void      Flash_LED1(void);
 static uint8_t   Debounce_Sample(GPIO_TypeDef *port, uint16_t pin,
@@ -110,6 +126,15 @@ void ButtonPanel_Init(void)
     db_s2.stable   = 1U;  db_s2.level   = 1U;  db_s2.cnt   = 0U;
     db_s3.stable   = 1U;  db_s3.level   = 1U;  db_s3.cnt   = 0U;
     db_s4.stable   = 1U;  db_s4.level   = 1U;  db_s4.cnt   = 0U;
+
+    /* Two-key state */
+    key1_consumed      = 0U;
+    key2_consumed      = 0U;
+    chord_armed        = 0U;
+    chord_start_ms     = 0U;
+    disable_active     = 0U;
+    disable_frames     = 0U;
+    last_disable_tx_ms = 0U;
 
     /* Timing */
     last_button_scan_ms = HAL_GetTick();
@@ -153,14 +178,15 @@ void ButtonPanel_Process(void)
     /* ---- Button scan – every BUTTON_SCAN_PERIOD_MS ---- */
     if ((now - last_button_scan_ms) >= BUTTON_SCAN_PERIOD_MS) {
         last_button_scan_ms = now;
-        Scan_Buttons();        /* release edge → lap-timer / error-clear TX */
+        Scan_Buttons(now);     /* release edge → lap-timer / error-clear TX */
+        Update_Disable_Request(now);
         Update_Drive_Mode();
         ADC_Read_And_Filter();
 
-        /* ---- Slip level change detection → 0x700 ---- */
+        /* ---- Slip level change detection → 0x703 ---- */
         if (slip_level != last_sent_slip_level) {
             last_sent_slip_level = slip_level;
-            Send_CAN_SlipLevel();
+            Send_CAN_SteeringCmd(0U);
             Flash_LED1();
         }
 
@@ -218,11 +244,17 @@ static void ADC_Read_And_Filter(void)
 /**
  * @brief  Scan the two push-buttons with software debounce.
  *
- *   PB12: release (level 0→1) → send lap-timer toggle (0x701)
- *   PB13: release (level 0→1) → send error clear (0x702)
+ *   Release of a key that was pressed on its own (level 0→1):
+ *     PB12 KEY1 → 0x703 LapTimerToggle = 1
+ *     PB13 KEY2 → 0x703 ErrorClearActive = 1
  *   Each press sends exactly one frame; no repeat while held, no 0 frame.
+ *
+ *   KEY1 going down while KEY2 is already down arms the exit-enable chord
+ *   (see Update_Disable_Request). KEY2 going down while KEY1 is down, or both
+ *   in the same scan, is the wrong order: nothing fires. Either way both keys
+ *   are consumed until they are released.
  */
-static void Scan_Buttons(void)
+static void Scan_Buttons(uint32_t now)
 {
     uint8_t pb12_old = db_pb12.level;
     uint8_t pb13_old = db_pb13.level;
@@ -230,13 +262,78 @@ static void Scan_Buttons(void)
     uint8_t pb12_new = Debounce_Sample(KEY1_GPIO_Port, KEY1_Pin, &db_pb12);
     uint8_t pb13_new = Debounce_Sample(KEY2_GPIO_Port, KEY2_Pin, &db_pb13);
 
-    /* Level rising edge = release: old=0 (pressed) → new=1 (idle, pull-up) */
+    /* Press edge = level 1 (idle, pull-up) → 0 (pressed) */
+    if (pb12_old == 1U && pb12_new == 0U && pb13_new == 0U) {
+        key1_consumed = 1U;
+        key2_consumed = 1U;
+        if (pb13_old == 0U) {
+            chord_armed    = 1U;
+            chord_start_ms = now;
+        }
+    }
+    if (pb13_old == 1U && pb13_new == 0U && pb12_new == 0U) {
+        key1_consumed = 1U;
+        key2_consumed = 1U;
+    }
+    if (pb12_new != 0U || pb13_new != 0U) {
+        chord_armed = 0U;   /* either key up: the chord is broken */
+    }
+
+    /* Release edge = level 0 (pressed) → 1 (idle) */
     if (pb12_old == 0U && pb12_new == 1U) {
-        Send_CAN_RecorderToggle();
-        Flash_LED1();
+        if (key1_consumed != 0U) {
+            key1_consumed = 0U;
+        } else {
+            Send_CAN_SteeringCmd(STEERING_CMD_LAP_TOGGLE);
+            Flash_LED1();
+        }
     }
     if (pb13_old == 0U && pb13_new == 1U) {
-        Send_CAN_ErrorClear();
+        if (key2_consumed != 0U) {
+            key2_consumed = 0U;
+        } else {
+            Send_CAN_SteeringCmd(STEERING_CMD_ERROR_CLEAR);
+            Flash_LED1();
+        }
+    }
+}
+
+/**
+ * @brief  Drive the exit-enable request (0x703 DisableRequest).
+ *
+ *   Fires once the armed chord has been held CHORD_HOLD_MS. While active, a
+ *   frame with DisableRequest = 1 goes out every DISABLE_TX_PERIOD_MS until
+ *   either key is released and at least DISABLE_MIN_FRAMES were sent, so a
+ *   single lost frame does not lose the request. A final frame with 0 marks
+ *   the end. Re-firing needs KEY1 to be released and pressed again.
+ */
+static void Update_Disable_Request(uint32_t now)
+{
+    uint8_t both_down = (uint8_t)((db_pb12.level == 0U) && (db_pb13.level == 0U));
+
+    if ((chord_armed != 0U) && ((now - chord_start_ms) >= CHORD_HOLD_MS)) {
+        chord_armed        = 0U;
+        disable_active     = 1U;
+        disable_frames     = 0U;
+        last_disable_tx_ms = now - DISABLE_TX_PERIOD_MS;  /* send right away */
+    }
+
+    if (disable_active == 0U) {
+        return;
+    }
+
+    if ((both_down == 0U) && (disable_frames >= DISABLE_MIN_FRAMES)) {
+        disable_active = 0U;
+        Send_CAN_SteeringCmd(0U);   /* DisableRequest back to 0 */
+        return;
+    }
+
+    if ((now - last_disable_tx_ms) >= DISABLE_TX_PERIOD_MS) {
+        last_disable_tx_ms = now;
+        Send_CAN_SteeringCmd(0U);   /* DisableRequest added while active */
+        if (disable_frames < 0xFFU) {
+            disable_frames++;
+        }
         Flash_LED1();
     }
 }
@@ -294,51 +391,27 @@ static void Update_Drive_Mode(void)
 }
 
 /**
- * @brief  Send slip level on CAN ID 0x700 (single byte, 0..7).
+ * @brief  Send 0x703 SteeringCmd with the current slip level.
+ * @param  event_bits  STEERING_CMD_LAP_TOGGLE / STEERING_CMD_ERROR_CLEAR for
+ *                     a one-shot key frame, 0 otherwise. DisableRequest is
+ *                     added here whenever the request is active, so a slip or
+ *                     key frame sent in between never shows it as 0.
  */
-static void Send_CAN_SlipLevel(void)
+static void Send_CAN_SteeringCmd(uint8_t event_bits)
 {
-    uint8_t data[1] = { slip_level };
+    uint8_t data[STEERING_CMD_DLC];
+
+    data[0] = (uint8_t)(slip_level & 0x07U);
+    data[1] = event_bits;
+    if (disable_active != 0U) {
+        data[1] |= STEERING_CMD_DISABLE_REQ;
+    }
 
     TxHeader.RTR                = CAN_RTR_DATA;
     TxHeader.IDE                = CAN_ID_STD;
-    TxHeader.StdId              = CAN_ID_SLIP_LEVEL;
+    TxHeader.StdId              = CAN_ID_STEERING_CMD;
     TxHeader.TransmitGlobalTime = DISABLE;
-    TxHeader.DLC                = 1U;
-    uint32_t mail;
-    HAL_CAN_AddTxMessage(&hcan, &TxHeader, data, &mail);
-}
-
-/**
- * @brief  Send the lap-timer toggle on CAN ID 0x701 (DBC name RecorderToggle).
- *         bit0 = 1 means "start/stop the Display lap or sprint timer".
- */
-static void Send_CAN_RecorderToggle(void)
-{
-    uint8_t data[1] = { 0x01U };
-
-    TxHeader.RTR                = CAN_RTR_DATA;
-    TxHeader.IDE                = CAN_ID_STD;
-    TxHeader.StdId              = CAN_ID_RECORDER_TOGGLE;
-    TxHeader.TransmitGlobalTime = DISABLE;
-    TxHeader.DLC                = 1U;
-    uint32_t mail;
-    HAL_CAN_AddTxMessage(&hcan, &TxHeader, data, &mail);
-}
-
-/**
- * @brief  Send error clear on CAN ID 0x702.
- *         bit0 = 1 means "clear error".
- */
-static void Send_CAN_ErrorClear(void)
-{
-    uint8_t data[1] = { 0x01U };
-
-    TxHeader.RTR                = CAN_RTR_DATA;
-    TxHeader.IDE                = CAN_ID_STD;
-    TxHeader.StdId              = CAN_ID_ERROR_CLEAR;
-    TxHeader.TransmitGlobalTime = DISABLE;
-    TxHeader.DLC                = 1U;
+    TxHeader.DLC                = STEERING_CMD_DLC;
     uint32_t mail;
     HAL_CAN_AddTxMessage(&hcan, &TxHeader, data, &mail);
 }
